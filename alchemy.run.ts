@@ -175,6 +175,7 @@ const resolveSelfHostAccess = (
   stage: string,
   provision: boolean,
   workersSubdomain: string,
+  customDomain: string,
 ) =>
   Effect.gen(function* () {
     let teamDomain = yield* optionalVar("TEAM_DOMAIN");
@@ -249,7 +250,7 @@ const resolveSelfHostAccess = (
         applicationId: "SelfHostAccess",
         policyName: `open-seo ${stage} self-host users`,
         applicationName: `open-seo ${stage}`,
-        domain: `${workerName(stage)}.${subdomain}`,
+        domain: customDomain || `${workerName(stage)}.${subdomain}`,
         emails: allowedEmails,
       });
       policyAud = application.aud;
@@ -352,10 +353,14 @@ export default Alchemy.Stack(
       authUrl = "";
     }
 
+    // Self-host custom domain (e.g. seo.example.com). When set, the Worker
+    // serves it and the Access gate protects it instead of the workers.dev URL.
+    const customDomain = (yield* optionalVar("CUSTOM_DOMAIN")).trim();
     const access = yield* resolveSelfHostAccess(
       stage,
       authMode === "cloudflare_access" && !prod,
       workersSubdomain,
+      customDomain,
     );
 
     // Created once and bound into BOTH workers — they share the same
@@ -423,7 +428,15 @@ export default Alchemy.Stack(
     const app = yield* Cloudflare.Worker("open-seo", {
       name: workerName(stage),
       // Prod serves the real domains; the zone is inferred from the hostname.
-      domain: prod ? ["app.openseo.so", "www.app.openseo.so"] : undefined,
+      domain: prod
+        ? ["app.openseo.so", "www.app.openseo.so"]
+        : customDomain
+          ? [customDomain]
+          : undefined,
+      // With a self-host custom domain, that Access-gated hostname is the only
+      // entry point; drop the workers.dev route so it is not an ungated second
+      // door to the app.
+      ...(customDomain && !prod ? { url: false } : {}),
       // Prebuilt worker from `vite build` (@cloudflare/vite-plugin). The entry
       // exports the DO + WorkflowEntrypoint classes (re-exported by
       // src/server.ts), which `bundle: false` requires. Sibling chunks under
